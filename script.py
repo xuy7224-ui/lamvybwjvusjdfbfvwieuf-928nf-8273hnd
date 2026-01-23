@@ -2,6 +2,7 @@ import json
 import logging
 import glob
 import os
+from telegram.helpers import mention_html
 import random
 import re
 from io import BytesIO
@@ -34,6 +35,9 @@ CORPUS_FILE = "corpus_words.json"
 
 # Вероятность, что бот сам ответит в канал бредом после нового поста
 AUTO_POST_PROBABILITY = 0.18  # 0.15 = 15% случаев
+
+# Вероятность, что бред будет адресован какому-то рандомному админу
+RANDOM_ADMIN_MENTION_PROBABILITY = 0.3  # 0.3 = 30% случаев
 
 # Триггер-фраза для мема в канале (ответом на сообщение)
 MEME_TRIGGER = "сделай меме"
@@ -128,6 +132,19 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 
     member = await context.bot.get_chat_member(chat.id, user.id)
     return member.status in ("administrator", "creator")
+
+async def get_random_admin(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Возвращает случайного НЕ-бота-админа этого чата (или None, если нет)."""
+    try:
+        admins = await context.bot.get_chat_administrators(chat_id)
+    except Exception as e:
+        logger.error(f"Не удалось получить админов для чата {chat_id}: {e}")
+        return None
+
+    humans = [a.user for a in admins if not a.user.is_bot]
+    if not humans:
+        return None
+    return random.choice(humans)
 
 
 def deny_if_not_owner_private(update: Update) -> bool:
@@ -448,10 +465,24 @@ async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 2) Обычный пост канала — добавляем токены и иногда отвечаем бредом
     add_tokens_from_message(msg)
 
-    if random.random() < AUTO_POST_PROBABILITY:
-        text = make_babble_markov2()
-        await context.bot.send_message(chat_id=msg.chat_id, text=text)
+        if random.random() < AUTO_POST_PROBABILITY:
+        reply_text = make_babble_markov2()
 
+        # иногда адресуем бред рандомному админу
+        if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
+            admin = await get_random_admin(msg.chat_id, context)
+            if admin is not None:
+                mention = mention_html(admin.id, admin.full_name)
+                reply_text = f"{mention} {reply_text}"
+                await context.bot.send_message(
+                    chat_id=msg.chat_id,
+                    text=reply_text,
+                    parse_mode="HTML",
+                )
+                return  # уже отправили, выходим
+
+        # обычный бред без адресации
+        await context.bot.send_message(chat_id=msg.chat_id, text=reply_text)
 
 async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -467,12 +498,27 @@ async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = make_babble_markov2()
 
-    if CHANNEL_ID is None:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+target_chat_id = CHANNEL_ID or update.effective_chat.id
+
+# иногда пнуть рандомного админа
+if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
+    admin = await get_random_admin(target_chat_id, context)
+    if admin is not None:
+        mention = mention_html(admin.id, admin.full_name)
+        text = f"{mention} {text}"
+        await context.bot.send_message(
+            chat_id=target_chat_id,
+            text=text,
+            parse_mode="HTML",
+        )
     else:
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
-        if update.effective_chat.id != CHANNEL_ID:
-            await update.message.reply_text("Отправил бред в канал.")
+        await context.bot.send_message(chat_id=target_chat_id, text=text)
+else:
+    await context.bot.send_message(chat_id=target_chat_id, text=text)
+
+if target_chat_id != update.effective_chat.id:
+    await update.message.reply_text("дон короч я кинул хуйню в канал")
+
 
 
 async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -484,7 +530,7 @@ async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not await is_admin(update, context):
-        await update.message.reply_text("Эта команда только для админов.")
+        await update.message.reply_text("пошел нахуй лол")
         return
 
     text = " ".join(context.args) if context.args else ""
@@ -581,3 +627,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
