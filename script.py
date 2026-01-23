@@ -1,5 +1,6 @@
 import json
 import logging
+import glob
 import os
 import random
 import re
@@ -32,7 +33,7 @@ CHANNEL_ID = -1003009758716  # <<< ЗАМЕНИ на id своего канал�
 CORPUS_FILE = "corpus_words.json"
 
 # Вероятность, что бот сам ответит в канал бредом после нового поста
-AUTO_POST_PROBABILITY = 0.25  # 0.15 = 15% случаев
+AUTO_POST_PROBABILITY = 0.18  # 0.15 = 15% случаев
 
 # Триггер-фраза для мема в канале (ответом на сообщение)
 MEME_TRIGGER = "сделай меме"
@@ -235,8 +236,13 @@ def tokens_to_text(tokens: List[str]) -> str:
     return text
 
 
-def make_babble_markov2(max_tokens: int = 10) -> str:
+def make_babble_markov2(max_tokens: int = None) -> str:
     """Генерим текст по марковской цепи 2-го порядка."""
+
+    # Если длина не задана — выбираем случайную от 1 до 13
+    if max_tokens is None:
+        max_tokens = random.randint(1, 13)
+
     if len(CORPUS_TOKENS) < 3 or not MARKOV2:
         return "Пока мало данных для марковской магии. Напишите что-нибудь в канал."
 
@@ -247,23 +253,25 @@ def make_babble_markov2(max_tokens: int = 10) -> str:
     w1, w2 = start_pair
     tokens = [w1, w2]
 
-    for _ in range(max_tokens - 2):
+    # Генерируем в пределах max_tokens
+    while len(tokens) < max_tokens:
         key = (tokens[-2], tokens[-1])
         candidates = MARKOV2.get(key)
         if not candidates:
             break
+
         nxt = random.choice(candidates)
 
+        # избегаем двойной пунктуации
         if nxt in PUNCT and tokens[-1] in PUNCT:
             continue
 
         tokens.append(nxt)
 
-    text = tokens_to_text(tokens)
-    if not text:
-        text = " ".join(CORPUS_TOKENS[: min(10, len(CORPUS_TOKENS))]) + "..."
-    return text
+    # Обрезаем лишнее, если вдруг вышло больше
+    tokens = tokens[:max_tokens]
 
+    return tokens_to_text(tokens)
 
 def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Пытаемся найти шрифт с поддержкой кириллицы, иначе дефолт."""
@@ -343,32 +351,31 @@ def draw_centered_text(
 
 
 def create_meme_image(top_text: str, bottom_text: str | None = None) -> BytesIO:
-    """Создаем мем на рандомной основе mem1..mem5 с надписями сверху и снизу."""
-    idx = random.randint(1, 5)
-    path = f"mem{idx}.jpg"
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Не найден файл {path}")
+    """Создаем мем на основе любого mem*.jpg, который реально есть в папке."""
+    # Ищем все файлы формата mem*.jpg
+    candidates = sorted(glob.glob("mem*.jpg"))
+    if not candidates:
+        raise FileNotFoundError("Не найдено ни одного файла mem*.jpg рядом со script.py")
+
+    path = random.choice(candidates)
 
     img = Image.open(path).convert("RGB")
     draw = ImageDraw.Draw(img)
 
-    # Делаем текст крупным
-    base_font_size = max(18, img.height // 25)
-    font = load_font(base_font_size)
-
     top_text = (top_text or "").upper()
     bottom_text = (bottom_text or "").upper()
+
+    base_font_size = max(24, img.height // 15)
+    font = load_font(base_font_size)
 
     max_width = img.width - 40
 
     top_lines = wrap_text(draw, top_text, font, max_width) if top_text else []
     bottom_lines = wrap_text(draw, bottom_text, font, max_width) if bottom_text else []
 
-    # Верхний текст
     y_top = 10
     draw_centered_text(draw, img.width, y_top, top_lines, font)
 
-    # Нижний текст
     if bottom_lines:
         total_height = 0
         for line in bottom_lines:
