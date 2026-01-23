@@ -428,61 +428,67 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Ловим сообщения ИЗ КАНАЛА.
-    - если это ответ с триггером "сделай меме" -> делаем мем
-    - иначе: добавляем текст поста в корпус и иногда отвечаем бредом
+    Ловим все сообщения, но:
+    - если это триггер "сделай меме"/"создай меме" как ответ -> делаем мем
+    - если это канал -> добавляем в корпус + иногда пишем бред
     """
     msg = update.effective_message
-    if not msg or msg.chat.type != "channel":
+    if not msg:
         return
 
     text = msg.text or msg.caption or ""
 
-    # 1) Триггер "сделай меме" как ответ на сообщение
-    if (
-        text
-        and MEME_TRIGGER in text.lower()
-        and msg.reply_to_message is not None
-    ):
-        src = msg.reply_to_message
-        src_text = src.text or src.caption or ""
-        if not src_text:
+    # --- 1) Триггеры создания мема ---
+    if text and msg.reply_to_message is not None:
+        lowered = text.lower()
+
+        if any(trigger in lowered for trigger in MEME_TRIGGERS):
+            src = msg.reply_to_message
+            src_text = src.text or src.caption or ""
+            if not src_text:
+                return
+
+            try:
+                bio = create_meme_image(src_text)
+            except Exception as e:
+                logger.error(f"Ошибка создания мема: {e}")
+                return
+
+            await context.bot.send_photo(
+                chat_id=msg.chat_id,
+                photo=bio,
+                reply_to_message_id=src.message_id,
+            )
             return
 
-        try:
-            bio = create_meme_image(src_text, None)
-        except FileNotFoundError as e:
-            logger.error(f"Ошибка мемов: {e}")
-            return
+    # --- 2) Если не канал — выходим ---
+    if msg.chat.type != "channel":
+        return
 
-        await context.bot.send_photo(
-            chat_id=msg.chat_id,
-            photo=bio,
-            reply_to_message_id=src.message_id,
-        )
-        return  # Не продолжаем обработку этого сообщения
-
-    # 2) Обычный пост канала — добавляем токены и иногда отвечаем бредом
+    # --- 3) Добавляем текст в корпус ---
     add_tokens_from_message(msg)
 
-        if random.random() < AUTO_POST_PROBABILITY:
+    # --- 4) Шанс отправить бред ---
+    if random.random() < AUTO_POST_PROBABILITY:
         reply_text = make_babble_markov2()
 
-        # иногда адресуем бред рандомному админу
+        # шанс упоминания рандомного админа
         if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
             admin = await get_random_admin(msg.chat_id, context)
             if admin is not None:
                 mention = mention_html(admin.id, admin.full_name)
                 reply_text = f"{mention} {reply_text}"
+
                 await context.bot.send_message(
                     chat_id=msg.chat_id,
                     text=reply_text,
                     parse_mode="HTML",
                 )
-                return  # уже отправили, выходим
+                return
 
-        # обычный бред без адресации
+        # обычный бред без упоминания
         await context.bot.send_message(chat_id=msg.chat_id, text=reply_text)
+
 
 async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -627,4 +633,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
