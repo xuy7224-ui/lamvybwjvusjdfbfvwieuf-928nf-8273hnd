@@ -491,70 +491,71 @@ async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /babble — сгенерить бред и отправить его в КАНАЛ.
-    Команда доступна только админам (и в ЛС только OWNER_ID).
-    """
-    if deny_if_not_owner_private(update):
-        return
-
+    """Генерация бреда и отправка в канал."""
     if not await is_admin(update, context):
         await update.message.reply_text("Эта команда только для админов.")
         return
 
     text = make_babble_markov2()
+    target_chat_id = CHANNEL_ID or update.effective_chat.id
 
-target_chat_id = CHANNEL_ID or update.effective_chat.id
+    # иногда упоминать рандомного админа
+    if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
+        admin = await get_random_admin(target_chat_id, context)
+        if admin is not None:
+            mention = mention_html(admin.id, admin.full_name)
+            text = f"{mention} {text}"
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text=text,
+                parse_mode="HTML",
+            )
+            return
 
-# иногда пнуть рандомного админа
-if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
-    admin = await get_random_admin(target_chat_id, context)
-    if admin is not None:
-        mention = mention_html(admin.id, admin.full_name)
-        text = f"{mention} {text}"
-        await context.bot.send_message(
-            chat_id=target_chat_id,
-            text=text,
-            parse_mode="HTML",
-        )
-    else:
-        await context.bot.send_message(chat_id=target_chat_id, text=text)
-else:
+    # обычный бред
     await context.bot.send_message(chat_id=target_chat_id, text=text)
 
-if target_chat_id != update.effective_chat.id:
-    await update.message.reply_text("дон короч я кинул хуйню в канал")
+    if target_chat_id != update.effective_chat.id:
+        await update.message.reply_text("Отправил бред в канал.")
+
 
 
 
 async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /say текст — написать от лица бота.
-    Всегда шлём в КАНАЛ (CHANNEL_ID).
-    """
-    if deny_if_not_owner_private(update):
-        return
-
+    """Пишет сообщение от лица бота в канал."""
     if not await is_admin(update, context):
-        await update.message.reply_text("пошел нахуй лол")
+        await update.message.reply_text("Эта команда только для админов.")
         return
 
     text = " ".join(context.args) if context.args else ""
     if not text and update.message.reply_to_message:
         rep = update.message.reply_to_message
-        text = rep.text or rep.caption or {}
+        text = rep.text or rep.caption or ""
 
     if not text:
-        await update.message.reply_text("Использование: /say текст_сообщения")
+        await update.message.reply_text("Использование: /say текст")
         return
 
-    if CHANNEL_ID is None:
-        await update.message.reply_text("Не задан CHANNEL_ID в коде.")
-        return
+    target_chat_id = CHANNEL_ID or update.effective_chat.id
 
-    await context.bot.send_message(chat_id=CHANNEL_ID, text=text)
-    if update.effective_chat.id != CHANNEL_ID:
-        await update.message.reply_text("Отправлено от лица бота в канал.")
+    # иногда упоминать рандомного админа
+    if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
+        admin = await get_random_admin(target_chat_id, context)
+        if admin is not None:
+            mention = mention_html(admin.id, admin.full_name)
+            text = f"{mention} {text}"
+            await context.bot.send_message(
+                chat_id=target_chat_id,
+                text=text,
+                parse_mode="HTML",
+            )
+            return
+
+    # обычная отправка
+    await context.bot.send_message(chat_id=target_chat_id, text=text)
+
+    if target_chat_id != update.effective_chat.id:
+        await update.message.reply_text("Отправлено в канал.")
 
 
 async def meme_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -633,5 +634,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
