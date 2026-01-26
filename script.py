@@ -639,7 +639,7 @@ def main():
 
     load_corpus_from_file()
 
-        app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Планировщик сообщений по времени (МСК)
     job_queue = app.job_queue
@@ -657,13 +657,12 @@ def main():
             name="night_sleep_ping",
         )
 
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("babble", babble_cmd))
     app.add_handler(CommandHandler("say", say_cmd))
     app.add_handler(CommandHandler("meme", meme_cmd))
 
-    # Ловим ВСЕ сообщения, а внутри channel_listener сами фильтруем канал
+    # Ловим все сообщения
     app.add_handler(MessageHandler(filters.ALL, channel_listener))
 
     logger.info("Бот запущен...")
@@ -672,5 +671,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
