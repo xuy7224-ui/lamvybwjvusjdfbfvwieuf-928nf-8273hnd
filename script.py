@@ -639,20 +639,24 @@ def main():
 
     load_corpus_from_file()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+        app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Планировщик сообщений по времени (МСК)
     job_queue = app.job_queue
-    job_queue.run_daily(
-        morning_school_ping,
-        time=time(hour=9, minute=0, tzinfo=MOSCOW_TZ),
-        name="morning_school_ping",
-    )
-    job_queue.run_daily(
-        night_sleep_ping,
-        time=time(hour=23, minute=0, tzinfo=MOSCOW_TZ),
-        name="night_sleep_ping",
-    )
+    if job_queue is None:
+        logger.warning("JobQueue не доступен, планировщик не будет работать.")
+    else:
+        job_queue.run_daily(
+            morning_school_ping,
+            time=time(hour=9, minute=0, tzinfo=MOSCOW_TZ),
+            name="morning_school_ping",
+        )
+        job_queue.run_daily(
+            night_sleep_ping,
+            time=time(hour=23, minute=0, tzinfo=MOSCOW_TZ),
+            name="night_sleep_ping",
+        )
+
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("babble", babble_cmd))
@@ -668,4 +672,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
