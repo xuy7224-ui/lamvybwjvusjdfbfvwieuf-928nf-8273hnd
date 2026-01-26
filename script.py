@@ -534,6 +534,34 @@ async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if target_chat_id != update.effective_chat.id:
         await update.message.reply_text("Отправил бред в канал.")
 
+async def osk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тегает случайного админа и пишет заранее заданный текст."""
+    if not await is_admin(update, context):
+        await update.message.reply_text("Эта команда только для админов.")
+        return
+
+    target_chat_id = CHANNEL_ID or update.effective_chat.id
+
+    admin = await get_random_admin(target_chat_id, context)
+    if not admin:
+        await update.message.reply_text("Не удалось найти админа.")
+        return
+
+    mention = mention_html(admin.id, admin.full_name)
+
+    # <<< здесь ты можешь сам изменить текст на любой свой
+    text = f"{mention} привет!"
+
+    await context.bot.send_message(
+        chat_id=target_chat_id,
+        text=text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+    if target_chat_id != update.effective_chat.id:
+        await update.message.reply_text("Отправлено.")
+
 
 async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Пишет сообщение от лица бота в канал с HTML-форматированием."""
@@ -661,6 +689,7 @@ def main():
     app.add_handler(CommandHandler("babble", babble_cmd))
     app.add_handler(CommandHandler("say", say_cmd))
     app.add_handler(CommandHandler("meme", meme_cmd))
+    app.add_handler(CommandHandler("osk", osk_cmd))
 
     # Ловим все сообщения
     app.add_handler(MessageHandler(filters.ALL, channel_listener))
@@ -671,6 +700,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
