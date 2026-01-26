@@ -400,7 +400,7 @@ async def random_admin_insult(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         return
 
     mention = mention_html(admin.id, admin.full_name)
-    text = f"{mention} жирная шлюха"
+    text = f"{mention} жирная шлюшка"
     await context.bot.send_message(
         chat_id=chat_id,
         text=text,
@@ -413,14 +413,14 @@ async def morning_school_ping(context: ContextTypes.DEFAULT_TYPE):
     """Каждое утро в 9:00 по МСК."""
     if CHANNEL_ID is None:
         return
-    await context.bot.send_message(chat_id=CHANNEL_ID, text="все в школе?")
+    await context.bot.send_message(chat_id=CHANNEL_ID, text="все в школе мои сладкие?")
 
 
 async def night_sleep_ping(context: ContextTypes.DEFAULT_TYPE):
     """Каждый вечер в 23:00 по МСК."""
     if CHANNEL_ID is None:
         return
-    await context.bot.send_message(chat_id=CHANNEL_ID, text="все легли?")
+    await context.bot.send_message(chat_id=CHANNEL_ID, text="все легли пупсы?")
 
 
 # --------- ХЕНДЛЕРЫ ---------
@@ -668,3 +668,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
