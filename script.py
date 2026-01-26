@@ -7,6 +7,9 @@ import random
 import re
 from io import BytesIO
 from typing import List, Dict, Tuple
+from datetime import time  # <<< добавлено
+
+import pytz  # <<< добавлено
 
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update, Message
@@ -27,25 +30,33 @@ BOT_TOKEN = "7901201601:AAFg96v9MY9nr4I3PRgBH4_IHnhu6YRF3u4"
 OWNER_ID = 7877092881
 
 # ID канала, в который бот должен писать (/babble, /say, авто-бред)
-# Пример: -1001234567890123
-CHANNEL_ID = -1003009758716  # <<< ЗАМЕНИ на id своего канала
+CHANNEL_ID = -1003009758716  # <<< твой канал
 
 # Файл, где храним корпус токенов (слова + знаки)
 CORPUS_FILE = "corpus_words.json"
 
 # Вероятность, что бот сам ответит в канал бредом после нового поста
-AUTO_POST_PROBABILITY = 0.18  # 0.15 = 15% случаев
+AUTO_POST_PROBABILITY = 0.15  # 15% случаев
 
 # Вероятность, что бред будет адресован какому-то рандомному админу
-RANDOM_ADMIN_MENTION_PROBABILITY = 0.3  # 0.3 = 30% случаев
+RANDOM_ADMIN_MENTION_PROBABILITY = 0.3  # 30% случаев
 
-# Триггер-фраза для мема в канале (ответом на сообщение)
+# Вероятность рандомно оскорбить админа
+RANDOM_ADMIN_INSULT_PROBABILITY = 0.08  # <<< 8%
+
+# Базовый триггер для текста /start
 MEME_TRIGGER = "сделай меме"
+
+# Список триггеров, которые бот ловит в ответах ("сделай меме" и т.п.)
+MEME_TRIGGERS = ["сделай меме", "создай меме", "бля", "нахуй", "завоз"]
 
 # Имя TTF-шрифта с кириллицей (должен лежать рядом со script.py)
 MEME_FONT_FILE = "meme_font.ttf"
 
-PUNCT = ".,!?"
+PUNCT = ".,!?#^£"
+
+# Часовой пояс Москвы
+MOSCOW_TZ = pytz.timezone("Europe/Moscow")  # <<< добавлено
 
 # ===============================================
 
@@ -65,11 +76,7 @@ MARKOV2: Dict[Tuple[str, str], List[str]] = {}
 # --------- ВСПОМОГАТЕЛЬНОЕ ---------
 
 def tokenize(text: str) -> List[str]:
-    """
-    Разбиваем текст на токены:
-    - слова/числа
-    - отдельные знаки пунктуации . , ! ?
-    """
+    """Разбиваем текст на токены: слова/числа и знаки пунктуации . , ! ?"""
     tokens = re.findall(r"\w+|[.,!?]", text, flags=re.UNICODE)
     return tokens
 
@@ -133,6 +140,7 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     member = await context.bot.get_chat_member(chat.id, user.id)
     return member.status in ("administrator", "creator")
 
+
 async def get_random_admin(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Возвращает случайного НЕ-бота-админа этого чата (или None, если нет)."""
     try:
@@ -147,26 +155,6 @@ async def get_random_admin(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
     return random.choice(humans)
 
 
-def deny_if_not_owner_private(update: Update) -> bool:
-    """
-    Возвращает True, если нужно ОТКАЗАТЬ пользователю в ЛС.
-    Используем в /start, /babble, /say, /meme.
-    """
-    chat = update.effective_chat
-    user = update.effective_user
-    if chat and chat.type == "private":
-        if not user or user.id != OWNER_ID:
-            # Можно ничего не отвечать, но давай скажем честно
-            try:
-                update.message.reply_text(
-                    "Доступ к функционалу бота в ЛС только у владельца."
-                )
-            except Exception:
-                pass
-            return True
-    return False
-
-
 def update_markov_with_sequence(seq: List[str]):
     """Обновляем марковскую цепь новыми токенами подряд (2-й порядок)."""
     global MARKOV2
@@ -174,7 +162,6 @@ def update_markov_with_sequence(seq: List[str]):
     if not seq:
         return
 
-    # Связь с "хвостом" общего корпуса: берем последние два токена
     prev1 = prev2 = None
     if len(CORPUS_TOKENS) >= 2:
         prev1, prev2 = CORPUS_TOKENS[-2], CORPUS_TOKENS[-1]
@@ -254,9 +241,7 @@ def tokens_to_text(tokens: List[str]) -> str:
 
 
 def make_babble_markov2(max_tokens: int = None) -> str:
-    """Генерим текст по марковской цепи 2-го порядка."""
-
-    # Если длина не задана — выбираем случайную от 1 до 13
+    """Генерим текст по марковской цепи 2-го порядка (1–13 слов)."""
     if max_tokens is None:
         max_tokens = random.randint(1, 13)
 
@@ -270,7 +255,6 @@ def make_babble_markov2(max_tokens: int = None) -> str:
     w1, w2 = start_pair
     tokens = [w1, w2]
 
-    # Генерируем в пределах max_tokens
     while len(tokens) < max_tokens:
         key = (tokens[-2], tokens[-1])
         candidates = MARKOV2.get(key)
@@ -279,27 +263,23 @@ def make_babble_markov2(max_tokens: int = None) -> str:
 
         nxt = random.choice(candidates)
 
-        # избегаем двойной пунктуации
         if nxt in PUNCT and tokens[-1] in PUNCT:
             continue
 
         tokens.append(nxt)
 
-    # Обрезаем лишнее, если вдруг вышло больше
     tokens = tokens[:max_tokens]
-
     return tokens_to_text(tokens)
+
 
 def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Пытаемся найти шрифт с поддержкой кириллицы, иначе дефолт."""
-    # 1) Пробуем пользовательский шрифт в файле meme_font.ttf
     if os.path.exists(MEME_FONT_FILE):
         try:
             return ImageFont.truetype(MEME_FONT_FILE, size=size)
         except Exception as e:
             logger.error(f"Не удалось загрузить шрифт {MEME_FONT_FILE}: {e}")
 
-    # 2) Пробуем системные варианты
     candidate_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -314,7 +294,6 @@ def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
             except Exception:
                 continue
 
-    # 3) fallback — дефолтный (может плохо поддерживать кириллицу)
     logger.warning("Не найден TTF-шрифт, используем дефолтный (кириллица может не отображаться).")
     return ImageFont.load_default()
 
@@ -369,7 +348,6 @@ def draw_centered_text(
 
 def create_meme_image(top_text: str, bottom_text: str | None = None) -> BytesIO:
     """Создаем мем на основе любого mem*.jpg, который реально есть в папке."""
-    # Ищем все файлы формата mem*.jpg
     candidates = sorted(glob.glob("mem*.jpg"))
     if not candidates:
         raise FileNotFoundError("Не найдено ни одного файла mem*.jpg рядом со script.py")
@@ -410,27 +388,65 @@ def create_meme_image(top_text: str, bottom_text: str | None = None) -> BytesIO:
     return bio
 
 
+# --------- ДОП. ФУНКЦИИ ---------
+
+async def random_admin_insult(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """С 8% шансом тегает рандомного админа и пишет, что он жирная шлюха."""
+    if random.random() >= RANDOM_ADMIN_INSULT_PROBABILITY:
+        return
+
+    admin = await get_random_admin(chat_id, context)
+    if not admin:
+        return
+
+    mention = mention_html(admin.id, admin.full_name)
+    text = f"{mention} жирная шлюха"
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+
+async def morning_school_ping(context: ContextTypes.DEFAULT_TYPE):
+    """Каждое утро в 9:00 по МСК."""
+    if CHANNEL_ID is None:
+        return
+    await context.bot.send_message(chat_id=CHANNEL_ID, text="все в школе?")
+
+
+async def night_sleep_ping(context: ContextTypes.DEFAULT_TYPE):
+    """Каждый вечер в 23:00 по МСК."""
+    if CHANNEL_ID is None:
+        return
+    await context.bot.send_message(chat_id=CHANNEL_ID, text="все легли?")
+
+
 # --------- ХЕНДЛЕРЫ ---------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if deny_if_not_owner_private(update):
-        return
-
+    """Просто отвечает /start всем, без ограничений."""
+    user = update.effective_user
+    uid = user.id if user else "unknown"
     await update.message.reply_text(
         "Привет! Я каналный мини-сглыпа 🤪\n\n"
         "• В канале читаю посты и иногда сам пишу бред.\n"
         "• /babble — сгенерить бред и отправить в канал.\n"
-        "• /meme — сделать мем (mem1-5.jpg).\n"
+        "• /meme — сделать мем (mem*.jpg).\n"
         "• /say — написать от лица бота в канал.\n"
-        f"• В канале: ответь на пост фразой «{MEME_TRIGGER}» — сделаю мем."
+        f"• В канале: ответь на пост фразой «{MEME_TRIGGER}» — сделаю мем.\n\n"
+        f"Твой user_id: {uid}\n"
+        f"OWNER_ID в коде: {OWNER_ID}"
     )
 
 
 async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Ловим все сообщения, но:
-    - если это триггер "сделай меме"/"создай меме" как ответ -> делаем мем
+    - если это триггер "сделай меме"/"создай меме"/"бля"/"нахуй" как ответ -> делаем мем
     - если это канал -> добавляем в корпус + иногда пишем бред
+    - с 8% шансом тегаем рандомного админа и оскорбляем
     """
     msg = update.effective_message
     if not msg:
@@ -486,8 +502,10 @@ async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-        # обычный бред без упоминания
         await context.bot.send_message(chat_id=msg.chat_id, text=reply_text)
+
+    # --- 5) Случайно оскорбить админа (8%) ---
+    await random_admin_insult(msg.chat_id, context)
 
 
 async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -499,7 +517,6 @@ async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = make_babble_markov2()
     target_chat_id = CHANNEL_ID or update.effective_chat.id
 
-    # иногда упоминать рандомного админа
     if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
         admin = await get_random_admin(target_chat_id, context)
         if admin is not None:
@@ -512,33 +529,37 @@ async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # обычный бред
     await context.bot.send_message(chat_id=target_chat_id, text=text)
 
     if target_chat_id != update.effective_chat.id:
         await update.message.reply_text("Отправил бред в канал.")
 
 
-
-
 async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Пишет сообщение от лица бота в канал."""
+    """Пишет сообщение от лица бота в канал с HTML-форматированием."""
     if not await is_admin(update, context):
         await update.message.reply_text("Эта команда только для админов.")
         return
 
+    # Берём текст либо из аргументов, либо из реплая
     text = " ".join(context.args) if context.args else ""
     if not text and update.message.reply_to_message:
         rep = update.message.reply_to_message
         text = rep.text or rep.caption or ""
 
     if not text:
-        await update.message.reply_text("Использование: /say текст")
+        await update.message.reply_text(
+            "Использование: /say <текст в HTML>\n\n"
+            "Примеры:\n"
+            "/say <b>Жирный текст</b>\n"
+            '/say <a href=\"https://example.com\">Кликабельная ссылка</a>\n'
+            "/say Привет, <i>курсив</i>!"
+        )
         return
 
     target_chat_id = CHANNEL_ID or update.effective_chat.id
 
-    # иногда упоминать рандомного админа
+    # Иногда тегать рандомного админа
     if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
         admin = await get_random_admin(target_chat_id, context)
         if admin is not None:
@@ -548,21 +569,23 @@ async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=target_chat_id,
                 text=text,
                 parse_mode="HTML",
+                disable_web_page_preview=True,
             )
             return
 
-    # обычная отправка
-    await context.bot.send_message(chat_id=target_chat_id, text=text)
+    await context.bot.send_message(
+        chat_id=target_chat_id,
+        text=text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
     if target_chat_id != update.effective_chat.id:
         await update.message.reply_text("Отправлено в канал.")
 
 
 async def meme_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Создать мем (команда в личке/группе)."""
-    if deny_if_not_owner_private(update):
-        return
-
+    """Создать мем (команда в личке/группе/канале)."""
     if not await is_admin(update, context):
         await update.message.reply_text("Мемы может делать только админ 😎")
         return
@@ -598,7 +621,7 @@ async def meme_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bio = create_meme_image(top_text, bottom_text)
     except FileNotFoundError as e:
         await update.message.reply_text(
-            f"Ошибка: {e}\nУбедись, что mem1.jpg..mem5.jpg лежат рядом со script.py"
+            f"Ошибка: {e}\nУбедись, что mem*.jpg лежат рядом со script.py"
         )
         return
 
@@ -618,15 +641,26 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Команды (в личке или группе)
+    # Планировщик сообщений по времени (МСК)
+    job_queue = app.job_queue
+    job_queue.run_daily(
+        morning_school_ping,
+        time=time(hour=9, minute=0, tzinfo=MOSCOW_TZ),
+        name="morning_school_ping",
+    )
+    job_queue.run_daily(
+        night_sleep_ping,
+        time=time(hour=23, minute=0, tzinfo=MOSCOW_TZ),
+        name="night_sleep_ping",
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("babble", babble_cmd))
     app.add_handler(CommandHandler("say", say_cmd))
     app.add_handler(CommandHandler("meme", meme_cmd))
 
-    # Ловим сообщения ИЗ КАНАЛОВ
-    channel_filter = filters.ChatType.CHANNEL
-    app.add_handler(MessageHandler(channel_filter, channel_listener))
+    # Ловим ВСЕ сообщения, а внутри channel_listener сами фильтруем канал
+    app.add_handler(MessageHandler(filters.ALL, channel_listener))
 
     logger.info("Бот запущен...")
     app.run_polling()
@@ -634,6 +668,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
