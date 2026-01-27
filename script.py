@@ -36,13 +36,13 @@ CHANNEL_ID = -1003009758716  # <<< твой канал
 CORPUS_FILE = "corpus_words.json"
 
 # Вероятность, что бот сам ответит в канал бредом после нового поста
-AUTO_POST_PROBABILITY = 0.15  # 15% случаев
+AUTO_POST_PROBABILITY = 0.25  # 25% случаев
 
 # Вероятность, что бред будет адресован какому-то рандомному админу
 RANDOM_ADMIN_MENTION_PROBABILITY = 0.3  # 30% случаев
 
 # Вероятность рандомно оскорбить админа
-RANDOM_ADMIN_INSULT_PROBABILITY = 0.08  # <<< 8%
+RANDOM_ADMIN_INSULT_PROBABILITY = 0.08  # 8%
 
 # Базовый триггер для текста /start
 MEME_TRIGGER = "сделай меме"
@@ -56,7 +56,7 @@ MEME_FONT_FILE = "meme_font.ttf"
 PUNCT = ".,!?#^£"
 
 # Часовой пояс Москвы
-MOSCOW_TZ = pytz.timezone("Europe/Moscow")  # <<< добавлено
+MOSCOW_TZ = pytz.timezone("Europe/Moscow")
 
 # ===============================================
 
@@ -391,7 +391,7 @@ def create_meme_image(top_text: str, bottom_text: str | None = None) -> BytesIO:
 # --------- ДОП. ФУНКЦИИ ---------
 
 async def random_admin_insult(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """С 8% шансом тегает рандомного админа и пишет, что он жирная шлюха."""
+    """С 8% шансом тегает рандомного админа и пишет заранее заданный текст."""
     if random.random() >= RANDOM_ADMIN_INSULT_PROBABILITY:
         return
 
@@ -400,7 +400,7 @@ async def random_admin_insult(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         return
 
     mention = mention_html(admin.id, admin.full_name)
-    text = f"{mention} жирная шлюшка"
+    text = f"{mention} шлюшка"
     await context.bot.send_message(
         chat_id=chat_id,
         text=text,
@@ -446,7 +446,7 @@ async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Ловим все сообщения, но:
     - если это триггер "сделай меме"/"создай меме"/"бля"/"нахуй" как ответ -> делаем мем
     - если это канал -> добавляем в корпус + иногда пишем бред
-    - с 8% шансом тегаем рандомного админа и оскорбляем
+    - с 8% шансом тегаем рандомного админа
     """
     msg = update.effective_message
     if not msg:
@@ -504,7 +504,7 @@ async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(chat_id=msg.chat_id, text=reply_text)
 
-    # --- 5) Случайно оскорбить админа (8%) ---
+    # --- 5) Случайно тегнуть админа (8%) ---
     await random_admin_insult(msg.chat_id, context)
 
 
@@ -534,6 +534,7 @@ async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if target_chat_id != update.effective_chat.id:
         await update.message.reply_text("Отправил бред в канал.")
 
+
 async def osk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Тегает случайного админа и пишет заранее заданный текст."""
     if not await is_admin(update, context):
@@ -549,8 +550,7 @@ async def osk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     mention = mention_html(admin.id, admin.full_name)
 
-    # <<< здесь ты можешь сам изменить текст на любой свой
-    text = f"{mention} привет!"
+    text = f"{mention} ты шлюшка"
 
     await context.bot.send_message(
         chat_id=target_chat_id,
@@ -561,6 +561,62 @@ async def osk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if target_chat_id != update.effective_chat.id:
         await update.message.reply_text("Отправлено.")
+
+
+async def tagsay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /tagsay <user_id> <текст в HTML>
+
+    Пример:
+    /tagsay 123456789 <b>привет</b> как дела?
+    """
+    if not await is_admin(update, context):
+        await update.message.reply_text("Эта команда только для админов.")
+        return
+
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Использование:\n"
+            "/tagsay <user_id> <текст в HTML>\n\n"
+            "Пример:\n"
+            "/tagsay 123456789 <b>Привет</b>, как дела?"
+        )
+        return
+
+    target_chat_id = CHANNEL_ID or update.effective_chat.id
+
+    user_id_str = context.args[0]
+    try:
+        user_id = int(user_id_str)
+    except ValueError:
+        await update.message.reply_text("user_id должен быть числом.\nПример: /tagsay 123456789 текст")
+        return
+
+    message_text = " ".join(context.args[1:])
+    if not message_text:
+        await update.message.reply_text("Нужно указать текст после user_id.")
+        return
+
+    # Пытаемся узнать имя пользователя в чате
+    try:
+        member = await context.bot.get_chat_member(target_chat_id, user_id)
+        display_name = member.user.full_name
+    except Exception:
+        display_name = user_id_str  # запасной вариант
+
+    mention = mention_html(user_id, display_name)
+
+    send_text = f"{mention} {message_text}"
+
+    await context.bot.send_message(
+        chat_id=target_chat_id,
+        text=send_text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+
+    if target_chat_id != update.effective_chat.id:
+        await update.message.reply_text("Отправлено в канал.")
 
 
 async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -690,6 +746,7 @@ def main():
     app.add_handler(CommandHandler("say", say_cmd))
     app.add_handler(CommandHandler("meme", meme_cmd))
     app.add_handler(CommandHandler("osk", osk_cmd))
+    app.add_handler(CommandHandler("tagsay", tagsay_cmd))
 
     # Ловим все сообщения
     app.add_handler(MessageHandler(filters.ALL, channel_listener))
@@ -700,7 +757,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
