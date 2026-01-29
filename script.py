@@ -1,7 +1,7 @@
-import json
-import logging
 from dotenv import load_dotenv
 load_dotenv()
+import json
+import logging
 import glob
 import os
 from telegram.helpers import mention_html
@@ -24,8 +24,9 @@ from telegram.ext import (
 
 # ================== НАСТРОЙКИ ================== #
 
-# Токен бота от BotFather
-BOT_TOKEN = "7901201601:AAFg96v9MY9nr4I3PRgBH4_IHnhu6YRF3u4"
+# ⚠️ НЕ ХРАНИ ТОКЕН В КОДЕ. ЗАДАЙ В ОКРУЖЕНИИ:
+# export BOT_TOKEN="..."
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 # ID владельца, который может использовать функционал бота В ЛС
 OWNER_ID = 7877092881
@@ -43,7 +44,7 @@ EMOJI_FILE = "corpus_emojis.json"
 AUTO_POST_PROBABILITY = 0.25  # 25% случаев
 
 # Вероятность, что бот сам пришлёт ОПРОС после нового поста
-AUTO_POLL_PROBABILITY = 0.10  # 10%
+AUTO_POLL_PROBABILITY = 0.10  # 10% (ТОЛЬКО авто-опросы, не команды)
 
 # Вероятность подмешать эмодзи в сообщения бота (бред / say / babble и т.д.)
 EMOJI_APPEND_PROBABILITY = 0.35  # 35%
@@ -70,6 +71,12 @@ PUNCT = ".,!?#^£"
 
 # Часовой пояс Москвы
 MOSCOW_TZ = pytz.timezone("Europe/Moscow")
+
+# ---- GPT генерация опросов ----
+ENABLE_GPT_POLLS = True
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.2")  # можно переопределить окружением
+# OPENAI_API_KEY задай в окружении:
+# export OPENAI_API_KEY="..."
 
 # =============================================== #
 
@@ -148,7 +155,6 @@ def load_emojis():
         with open(EMOJI_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, list):
-                # убираем мусор, оставляем уникальные, но сохраняем список
                 seen = set()
                 cleaned = []
                 for x in data:
@@ -172,36 +178,31 @@ def save_emojis():
         logger.error(f"Не удалось сохранить эмодзи: {e}")
 
 
-# Простенький детектор эмодзи по диапазонам Unicode (не идеал, но для канала хватает)
+# Простенький детектор эмодзи по диапазонам Unicode
 _EMOJI_RE = re.compile(
     "["
-
-    "\U0001F300-\U0001F5FF"  # symbols & pictographs
-    "\U0001F600-\U0001F64F"  # emoticons
-    "\U0001F680-\U0001F6FF"  # transport & map
-    "\U0001F700-\U0001F77F"  # alchemical symbols
-    "\U0001F780-\U0001F7FF"  # Geometric Extended
-    "\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
-    "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
-    "\U0001FA00-\U0001FAFF"  # Chess etc / Symbols and Pictographs Extended-A
-    "\u2600-\u26FF"          # misc symbols
-    "\u2700-\u27BF"          # dingbats
-
+    "\U0001F300-\U0001F5FF"
+    "\U0001F600-\U0001F64F"
+    "\U0001F680-\U0001F6FF"
+    "\U0001F700-\U0001F77F"
+    "\U0001F780-\U0001F7FF"
+    "\U0001F800-\U0001F8FF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FAFF"
+    "\u2600-\u26FF"
+    "\u2700-\u27BF"
     "]+",
     flags=re.UNICODE
 )
 
 
 def extract_emojis_from_text(text: str) -> List[str]:
-    """Достаём эмодзи из текста."""
     if not text:
         return []
     chunks = _EMOJI_RE.findall(text)
-    # chunks могут быть "🔥🔥", разобьём на символы
     out: List[str] = []
     for ch in chunks:
         for c in ch:
-            # игнор вариационных селекторов/ZWJ тут не делаем умно, просто фильтруем
             if c.strip():
                 out.append(c)
     return out
@@ -212,13 +213,11 @@ def add_emojis_from_message(msg: Message):
     global EMOJI_POOL
     found: List[str] = []
 
-    # текст/подпись
     if msg.text:
         found.extend(extract_emojis_from_text(msg.text))
     if msg.caption:
         found.extend(extract_emojis_from_text(msg.caption))
 
-    # стикер: Telegram даёт emoji-строку у стикера
     try:
         if msg.sticker and msg.sticker.emoji:
             found.extend(extract_emojis_from_text(msg.sticker.emoji) or [msg.sticker.emoji])
@@ -251,7 +250,6 @@ def maybe_append_emoji(text: str) -> str:
     if EMOJI_POOL and random.random() < EMOJI_APPEND_PROBABILITY:
         e = pick_random_emoji()
         if e:
-            # чуть разнообразия: иногда 1, иногда 2 эмодзи
             if random.random() < 0.25:
                 e2 = pick_random_emoji()
                 if e2:
@@ -271,7 +269,6 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not chat or not user:
         return False
 
-    # В ЛС только владельцу разрешаем
     if chat.type == "private":
         return user.id == OWNER_ID
 
@@ -411,11 +408,7 @@ def _random_words(n_min: int, n_max: int) -> List[str]:
 
 
 def generate_random_poll() -> Tuple[str, List[str]]:
-    """
-    Генерируем: (вопрос, варианты).
-    Варианты: 2–5, уникальные, короткие.
-    """
-    # Вопрос: либо из маркова, либо из слов
+    """Генерируем: (вопрос, варианты) 2–5."""
     if len(CORPUS_TOKENS) >= 3 and MARKOV2 and random.random() < 0.7:
         q = make_babble_markov2(max_tokens=random.randint(3, 9))
     else:
@@ -432,14 +425,12 @@ def generate_random_poll() -> Tuple[str, List[str]]:
         if q[-1] not in "?!":
             q += random.choice(["?", "?!"])
 
-    q = q[:290]  # Telegram ограничение у вопроса 300, оставим запас
+    q = q[:290]
 
-    # Варианты
     option_count = random.randint(2, 5)
     options_set = set()
     options: List[str] = []
 
-    # Пытаемся делать варианты из 1-3 слов
     attempts = 0
     while len(options) < option_count and attempts < 200:
         attempts += 1
@@ -449,8 +440,7 @@ def generate_random_poll() -> Tuple[str, List[str]]:
         else:
             candidate = " ".join(parts)
 
-        candidate = candidate.strip()
-        candidate = candidate[:95]  # у Telegram лимит 100
+        candidate = candidate.strip()[:95]
         if not candidate:
             continue
         low = candidate.lower()
@@ -459,7 +449,6 @@ def generate_random_poll() -> Tuple[str, List[str]]:
         options_set.add(low)
         options.append(candidate)
 
-    # если вдруг не добрали
     while len(options) < 2:
         fallback = random.choice(["да", "нет", "не знаю", "жесть", "кайф"])
         if fallback.lower() not in options_set:
@@ -469,11 +458,153 @@ def generate_random_poll() -> Tuple[str, List[str]]:
     return q, options
 
 
+def maybe_append_emoji_to_option(opt: str) -> str:
+    """Иногда добавляем эмодзи в вариант."""
+    if not opt:
+        return opt
+    if EMOJI_POOL and random.random() < (EMOJI_APPEND_PROBABILITY * 0.6):
+        e = pick_random_emoji()
+        if e:
+            return f"{opt} {e}" if random.random() < 0.7 else f"{opt}{e}"
+    return opt
+
+
+def parse_poll_payload(raw: str) -> Tuple[str, List[str], int | None] | None:
+    """
+    Парсит: вопрос | вариант1 | вариант2 | ...
+    Для quiz можно пометить правильный вариант звёздочкой:
+      вопрос | *правильный | неправильный | ...
+    """
+    if not raw:
+        return None
+
+    parts = [p.strip() for p in raw.split("|") if p.strip()]
+    if len(parts) < 3:
+        return None
+
+    question = parts[0][:290]
+    options_raw = parts[1:11]  # максимум 10 вариантов
+
+    correct_index = None
+    options: List[str] = []
+
+    for p in options_raw:
+        if p.startswith("*"):
+            p2 = p[1:].strip()
+            if p2:
+                if correct_index is None:
+                    correct_index = len(options)
+                options.append(p2[:95])
+        else:
+            options.append(p[:95])
+
+    if len(options) < 2:
+        return None
+
+    return question, options, correct_index
+
+
+def parse_poll_flags_and_rest(args_text: str) -> Tuple[dict, str]:
+    """
+    Флаги:
+      anon, multi, quiz, gpt
+    Остальное — payload (вопрос | варианты) ИЛИ тема для gpt.
+    """
+    flags = {"anon": False, "multi": False, "quiz": False, "gpt": False}
+
+    if not args_text:
+        return flags, ""
+
+    tokens = args_text.strip().split()
+    rest_tokens = []
+    for t in tokens:
+        low = t.lower()
+        if low in ("anon", "multi", "quiz", "gpt"):
+            flags[low] = True
+        else:
+            rest_tokens.append(t)
+
+    rest = " ".join(rest_tokens).strip()
+    return flags, rest
+
+
+def generate_gpt_poll(topic: str, quiz: bool = False) -> Tuple[str, List[str], int | None]:
+    """Генерит poll через OpenAI. Если нет ключа — кидает исключение."""
+    if not ENABLE_GPT_POLLS:
+        raise RuntimeError("GPT polls выключены (ENABLE_GPT_POLLS=False).")
+
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("Нет OPENAI_API_KEY в окружении.")
+
+    try:
+        from openai import OpenAI  # type: ignore
+    except Exception as e:
+        raise RuntimeError(f"Не установлен пакет openai. Поставь: pip install openai. ({e})")
+
+    client = OpenAI(api_key=api_key)
+
+    topic = (topic or "").strip()
+    if not topic:
+        topic = "смешной абсурдный опрос для телеграм-канала на русском"
+
+    want = "с правильным вариантом" if quiz else "без правильного варианта"
+    prompt = f"""
+Сгенерируй короткий телеграм-опрос на русском {want}.
+Верни СТРОГО JSON без текста вокруг, формат:
+{{
+  "question": "...",
+  "options": ["...", "...", "..."],
+  "correct_index": 0
+}}
+Правила:
+- question до 120 символов
+- options: 2–5 вариантов, каждый до 50 символов
+- Без токсичных оскорблений, без призывов к насилию
+- Тема/вдохновение: {topic}
+Если это не quiz, ставь correct_index = null
+"""
+
+    resp = client.responses.create(
+        model=OPENAI_MODEL,
+        input=prompt,
+    )
+    text = (getattr(resp, "output_text", None) or "").strip()
+    if not text:
+        raise RuntimeError("Пустой ответ от GPT.")
+
+    try:
+        data = json.loads(text)
+        q = str(data.get("question", "")).strip()[:290]
+        opts = data.get("options", [])
+        if not isinstance(opts, list):
+            raise ValueError("options не список")
+        options = [str(x).strip()[:95] for x in opts if str(x).strip()]
+        if len(options) < 2:
+            raise ValueError("мало вариантов")
+
+        ci = data.get("correct_index", None)
+        correct_index = None
+        if ci is not None:
+            try:
+                correct_index = int(ci)
+            except Exception:
+                correct_index = None
+        if correct_index is not None and not (0 <= correct_index < len(options)):
+            correct_index = None
+
+        if not q:
+            raise ValueError("пустой вопрос")
+        return q, options, correct_index
+    except Exception as e:
+        raise RuntimeError(f"Не смог распарсить JSON от GPT: {e}. Ответ: {text[:400]}")
+
+
 async def send_random_poll(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Отправить рандомный опрос в чат."""
+    """Авто-опрос (рандомный)."""
     q, opts = generate_random_poll()
-    # иногда добавим эмодзи в вопрос, если есть
     q = maybe_append_emoji(q)
+    opts = [maybe_append_emoji_to_option(o) for o in opts]
     await context.bot.send_poll(
         chat_id=chat_id,
         question=q,
@@ -512,7 +643,6 @@ def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 
 
 def measure_text(draw: ImageDraw.ImageDraw, text: str, font):
-    """Возвращает (width, height) текста с учётом текущего шрифта."""
     bbox = draw.textbbox((0, 0), text, font=font)
     width = bbox[2] - bbox[0]
     height = bbox[3] - bbox[1]
@@ -520,7 +650,6 @@ def measure_text(draw: ImageDraw.ImageDraw, text: str, font):
 
 
 def wrap_text(draw: ImageDraw.ImageDraw, text: str, font, max_width: int) -> List[str]:
-    """Перенос строк по ширине картинки."""
     words = text.split()
     lines: List[str] = []
     current = ""
@@ -538,14 +667,7 @@ def wrap_text(draw: ImageDraw.ImageDraw, text: str, font, max_width: int) -> Lis
     return lines or [""]
 
 
-def draw_centered_text(
-    draw: ImageDraw.ImageDraw,
-    img_width: int,
-    y: int,
-    lines: List[str],
-    font,
-):
-    """Рисуем текст с обводкой по центру."""
+def draw_centered_text(draw: ImageDraw.ImageDraw, img_width: int, y: int, lines: List[str], font):
     for line in lines:
         w, h = measure_text(draw, line, font)
         x = (img_width - w) / 2
@@ -558,7 +680,6 @@ def draw_centered_text(
 
 
 def create_meme_image(top_text: str, bottom_text: str | None = None) -> BytesIO:
-    """Создаем мем на основе любого mem*.jpg, который реально есть в папке."""
     candidates = sorted(glob.glob("mem*.jpg"))
     if not candidates:
         raise FileNotFoundError("Не найдено ни одного файла mem*.jpg рядом со script.py")
@@ -599,7 +720,6 @@ def create_meme_image(top_text: str, bottom_text: str | None = None) -> BytesIO:
 # --------- ДОП. ФУНКЦИИ --------- #
 
 async def random_admin_insult(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """С 8% шансом тегает рандомного админа и пишет заранее заданный текст."""
     if random.random() >= RANDOM_ADMIN_INSULT_PROBABILITY:
         return
 
@@ -608,8 +728,7 @@ async def random_admin_insult(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
         return
 
     mention = mention_html(admin.id, admin.full_name)
-    text = f"{mention} шлюшка"
-    text = maybe_append_emoji(text)
+    text = maybe_append_emoji(f"{mention} шлюшка")
 
     await context.bot.send_message(
         chat_id=chat_id,
@@ -620,7 +739,6 @@ async def random_admin_insult(chat_id: int, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def morning_school_ping(context: ContextTypes.DEFAULT_TYPE):
-    """Каждое утро в 9:00 по МСК."""
     if CHANNEL_ID is None:
         return
     txt = maybe_append_emoji("все в школе мои сладкие?")
@@ -628,7 +746,6 @@ async def morning_school_ping(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def night_sleep_ping(context: ContextTypes.DEFAULT_TYPE):
-    """Каждый вечер в 23:00 по МСК."""
     if CHANNEL_ID is None:
         return
     txt = maybe_append_emoji("все легли пупсы?")
@@ -638,7 +755,6 @@ async def night_sleep_ping(context: ContextTypes.DEFAULT_TYPE):
 # --------- ХЕНДЛЕРЫ --------- #
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Просто отвечает /start всем, без ограничений."""
     user = update.effective_user
     uid = user.id if user else "unknown"
 
@@ -648,7 +764,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /babble — сгенерить бред и отправить в канал.\n"
         "• /meme — сделать мем (mem*.jpg).\n"
         "• /say — написать от лица бота в канал.\n"
-        "• /poll — сделать рандомный опрос (2–5 вариантов) и отправить в канал.\n"
+        "• /poll — опрос в канал (есть anon/multi/quiz/gpt).\n"
         f"• В канале: ответь на пост фразой «{MEME_TRIGGER}» — сделаю мем.\n\n"
         f"Твой user_id: {uid}\n"
         f"OWNER_ID в коде: {OWNER_ID}"
@@ -656,15 +772,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Ловим все сообщения, но:
-    - если это триггер "сделай меме"/... как ответ -> делаем мем
-    - если это канал -> добавляем в корпус + собираем эмодзи
-    - иногда пишем бред
-    - иногда шлём опрос (10%)
-    - иногда шлём только эмодзи, которые видели в канале
-    - с 8% шансом тегаем рандомного админа (оск)
-    """
     msg = update.effective_message
     if not msg:
         return
@@ -694,30 +801,27 @@ async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg.chat.type != "channel":
         return
 
-    # --- 3) Добавляем текст в корпус + собираем эмодзи ---
+    # --- 3) Добавляем текст в корпус + эмодзи ---
     add_tokens_from_message(msg)
     add_emojis_from_message(msg)
 
-    # --- 4) Шанс отправить ОПРОС (10%) ---
+    # --- 4) Авто-опрос (10%) ---
     if random.random() < AUTO_POLL_PROBABILITY:
         try:
             await send_random_poll(msg.chat_id, context)
         except Exception as e:
             logger.error(f"Не удалось отправить poll: {e}")
 
-    # --- 5) Шанс отправить бред ---
+    # --- 5) Авто-бред ---
     if random.random() < AUTO_POST_PROBABILITY:
-        reply_text = make_babble_markov2()
-        reply_text = maybe_append_emoji(reply_text)
+        reply_text = maybe_append_emoji(make_babble_markov2())
 
-        # шанс упоминания рандомного админа
         if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
             admin = await get_random_admin(msg.chat_id, context)
             if admin is not None:
                 mention = mention_html(admin.id, admin.full_name)
                 reply_text = f"{mention} {reply_text}"
 
-        # отправка (HTML если есть mention)
         if "<a href=" in reply_text:
             return await context.bot.send_message(
                 chat_id=msg.chat_id,
@@ -726,11 +830,10 @@ async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return await context.bot.send_message(chat_id=msg.chat_id, text=reply_text)
 
-    # --- 6) Иногда отправить только эмодзи, которые встречались в канале ---
+    # --- 6) Иногда только эмодзи ---
     if EMOJI_POOL and random.random() < AUTO_EMOJI_ONLY_PROBABILITY:
         e = pick_random_emoji()
         if e:
-            # иногда пачкой
             if random.random() < 0.3:
                 e2 = pick_random_emoji()
                 e3 = pick_random_emoji()
@@ -738,19 +841,16 @@ async def channel_listener(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await context.bot.send_message(chat_id=msg.chat_id, text=e)
 
-    # --- 7) Случайно тегнуть админа (8%) ---
+    # --- 7) Случайно тегнуть админа ---
     await random_admin_insult(msg.chat_id, context)
 
 
 async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Генерация бреда и отправка в канал."""
     if not await is_admin(update, context):
         await update.message.reply_text("Эта команда только для админов.")
         return
 
-    text = make_babble_markov2()
-    text = maybe_append_emoji(text)
-
+    text = maybe_append_emoji(make_babble_markov2())
     target_chat_id = CHANNEL_ID or update.effective_chat.id
 
     if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
@@ -773,14 +873,84 @@ async def babble_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def poll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /poll — отправить рандомный опрос в канал."""
+    """
+    /poll [anon] [multi] [quiz] [gpt] <payload>
+
+    Примеры:
+    /poll вопрос | да | нет
+    /poll anon вопрос | да | нет
+    /poll multi вопрос | вариант1 | вариант2 | вариант3
+    /poll quiz вопрос | *правильный | неправильный
+    /poll gpt смешная тема про школу
+    /poll gpt quiz тема про котов
+    """
     if not await is_admin(update, context):
         await update.message.reply_text("Эта команда только для админов.")
         return
 
     target_chat_id = CHANNEL_ID or update.effective_chat.id
+    args_text = " ".join(context.args) if context.args else ""
+
+    flags, rest = parse_poll_flags_and_rest(args_text)
+
+    is_anonymous = not flags["anon"]
+    allows_multiple = flags["multi"]
+    is_quiz = flags["quiz"]
+    use_gpt = flags["gpt"]
+
     try:
-        await send_random_poll(target_chat_id, context)
+        question: str
+        options: List[str]
+        correct_index: int | None = None
+
+        parsed = parse_poll_payload(rest)
+
+        if parsed:
+            question, options, correct_index = parsed
+            if is_quiz and correct_index is None:
+                correct_index = random.randint(0, len(options) - 1)
+        else:
+            if use_gpt:
+                try:
+                    question, options, correct_index = generate_gpt_poll(rest, quiz=is_quiz)
+                    if is_quiz and correct_index is None:
+                        correct_index = random.randint(0, len(options) - 1)
+                except Exception as e:
+                    logger.error(f"GPT poll не сработал, делаю рандом: {e}")
+                    question, options = generate_random_poll()
+                    if is_quiz:
+                        correct_index = random.randint(0, len(options) - 1)
+                    try:
+                        await update.message.reply_text(
+                            "gpt не сработал (нет OPENAI_API_KEY или ошибка), сделал рандомный опрос."
+                        )
+                    except Exception:
+                        pass
+            else:
+                question, options = generate_random_poll()
+                if is_quiz:
+                    correct_index = random.randint(0, len(options) - 1)
+
+        question = maybe_append_emoji(question)
+        options = [maybe_append_emoji_to_option(o) for o in options]
+
+        if is_quiz and allows_multiple:
+            allows_multiple = False
+
+        poll_kwargs = dict(
+            chat_id=target_chat_id,
+            question=question[:290],
+            options=[o[:95] for o in options][:10],
+            is_anonymous=is_anonymous,
+            allows_multiple_answers=allows_multiple,
+        )
+
+        if is_quiz:
+            poll_kwargs["type"] = "quiz"
+            poll_kwargs["correct_option_id"] = int(correct_index or 0)
+
+        await context.bot.send_poll(**poll_kwargs)
+
     except Exception as e:
         logger.error(f"Не удалось отправить poll: {e}")
         await update.message.reply_text(f"Ошибка при отправке опроса: {e}")
@@ -791,7 +961,6 @@ async def poll_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def osk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тегает случайного админа и пишет заранее заданный текст."""
     if not await is_admin(update, context):
         await update.message.reply_text("Эта команда только для админов.")
         return
@@ -816,10 +985,6 @@ async def osk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def tagsay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /tagsay <user_id> <текст в HTML>
-    Пример: /tagsay 123456789 <b>привет</b> как дела?
-    """
     if not await is_admin(update, context):
         await update.message.reply_text("Эта команда только для админов.")
         return
@@ -846,12 +1011,11 @@ async def tagsay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нужно указать текст после user_id.")
         return
 
-    # Пытаемся узнать имя пользователя в чате
     try:
         member = await context.bot.get_chat_member(target_chat_id, user_id)
         display_name = member.user.full_name
     except Exception:
-        display_name = user_id_str  # запасной вариант
+        display_name = user_id_str
 
     mention = mention_html(user_id, display_name)
     send_text = maybe_append_emoji(f"{mention} {message_text}")
@@ -867,12 +1031,10 @@ async def tagsay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Пишет сообщение от лица бота в канал с HTML-форматированием."""
     if not await is_admin(update, context):
         await update.message.reply_text("Эта команда только для админов.")
         return
 
-    # Берём текст либо из аргументов, либо из реплая
     text = " ".join(context.args) if context.args else ""
     if not text and update.message.reply_to_message:
         rep = update.message.reply_to_message
@@ -890,7 +1052,6 @@ async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     target_chat_id = CHANNEL_ID or update.effective_chat.id
 
-    # Иногда тегать рандомного админа
     if random.random() < RANDOM_ADMIN_MENTION_PROBABILITY:
         admin = await get_random_admin(target_chat_id, context)
         if admin is not None:
@@ -910,7 +1071,6 @@ async def say_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def meme_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Создать мем (команда в личке/группе/канале)."""
     if not await is_admin(update, context):
         await update.message.reply_text("Мемы может делать только админ 😎")
         return
@@ -955,8 +1115,11 @@ async def meme_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --------- MAIN --------- #
 
 def main():
-    if not BOT_TOKEN or BOT_TOKEN in ("PASTE_YOUR_TOKEN_HERE", "PUT_YOUR_TOKEN_HERE"):
-        raise RuntimeError("Поставь настоящий токен бота в BOT_TOKEN")
+    if not BOT_TOKEN:
+        raise RuntimeError(
+            "Не найден BOT_TOKEN в окружении.\n"
+            "Задай: export BOT_TOKEN=\"...\""
+        )
 
     if CHANNEL_ID is None:
         logger.warning("CHANNEL_ID не задан — /babble, /say, /poll не смогут писать в канал напрямую.")
@@ -966,7 +1129,6 @@ def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Планировщик сообщений по времени (МСК)
     job_queue = app.job_queue
     if job_queue is None:
         logger.warning("JobQueue не доступен, планировщик не будет работать.")
@@ -990,7 +1152,6 @@ def main():
     app.add_handler(CommandHandler("tagsay", tagsay_cmd))
     app.add_handler(CommandHandler("poll", poll_cmd))
 
-    # Ловим все сообщения
     app.add_handler(MessageHandler(filters.ALL, channel_listener))
 
     logger.info("Бот запущен...")
