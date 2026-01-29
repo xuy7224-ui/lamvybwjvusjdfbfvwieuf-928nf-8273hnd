@@ -1,5 +1,7 @@
 import json
 import logging
+from dotenv import load_dotenv
+load_dotenv()
 import glob
 import os
 from telegram.helpers import mention_html
